@@ -6,7 +6,7 @@ For our COMP 4710 class project, we are building a toolset to automate the tedio
 Currently, reviewing these documents means manually reading hundreds of pages of legalese, searching for alphanumeric federal codes, and cross-referencing them against massive Excel databases to see if they are acceptable. It takes hours. This project automates that entire workflow, saving our sponsor massive amounts of time.
 
 ## Phase 1: The Legal Code Flagger (Current State)
-The current Python script (`document-flagger.py`) handles standard federal solicitations. It acts as an incredibly advanced text parser and cross-referencer.
+The current Python script (`document_flagger.py`) handles standard federal solicitations. It acts as an incredibly advanced text parser and cross-referencer.
 
 **What it does:**
 * **Multi-Format Reading:** It reads native digital PDFs, modern Word documents (`.docx`), and even uses an OCR fallback (Tesseract) to read scanned image PDFs.
@@ -31,7 +31,7 @@ The current Python script (`document-flagger.py`) handles standard federal solic
 4. Run the script:
    ```bash
    cd Code
-   python document-flagger.py
+   python document_flagger.py
    ```
 
 ---
