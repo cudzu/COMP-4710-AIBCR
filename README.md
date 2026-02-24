@@ -31,7 +31,7 @@ The current Python script (`document-flagger.py`) handles standard federal solic
 4. Run the script:
    ```bash
    cd Code
-   python matrix_generator.py
+   python document-flagger.py
    ```
 
 ---
