@@ -7,6 +7,12 @@ Description: This script reads government contract PDFs and Word docs,
 =============================================================================
 """
 
+"""
+AI Use Statement:   Gemini 3.1 Pro was used extensively to aid in cleaning up, debugging, and commenting on code.
+                    The AI provided suggestions on code structure, error handling, and optimization, but all final decisions and 
+                    implementations were made by the human author.
+"""
+
 import os               # Helps the script find folders and files on the computer
 import re               # Helps find specific text patterns (like exact clause numbers)
 import pandas as pd     # Used to read, build, and save Excel and CSV spreadsheets
