@@ -1,37 +1,33 @@
 """
 =============================================================================
 Project: Automated Compliance Matrix Generator
-Description: This script reads government contract PDFs, finds the federal 
-             clauses, and builds a spreadsheet matching those clauses to our 
-             master database.
+Description: This script reads government contract PDFs and Word docs, 
+             builds a color-coded spreadsheet, and outputs a highlighted 
+             PDF/Word Doc showing exactly where each clause was found.
 =============================================================================
-
-=============================================================================
-Generative AI Use: 
-This code was commented and structured with the help of Google Gemini 3.1
-to make it easier to understand and maintain. The AI helped explain the 
-purpose of each function and the overall flow of the script in simple terms, 
-so that even someone new to programming can follow along.
-=============================================================================
-
 """
 
 import os               # Helps the script find folders and files on the computer
-import re               # Helps find specific text patterns (like clause numbers)
-import pandas as pd     # Used to read and write Excel and CSV files
+import re               # Helps find specific text patterns (like exact clause numbers)
+import pandas as pd     # Used to read, build, and save Excel and CSV spreadsheets
 import pdfplumber       # Used to read text from normal digital PDFs
-import pytesseract      # Used to read text from scanned pictures/documents
+import pytesseract      # Used to read text from scanned pictures/documents (OCR)
 from pdf2image import convert_from_path  # Turns PDF pages into pictures if needed
+import docx                                 # Used to read and modify Word Documents
+from docx.enum.text import WD_COLOR_INDEX   # Used to pick the yellow highlight color for Word
+import fitz                                 # Used to physically draw highlights on PDFs
 from datetime import datetime            # Adds the current time to our output files
+from openpyxl import load_workbook          # Used to open the saved Excel file for coloring
+from openpyxl.styles import PatternFill     # Used to paint the cell background colors
 
 # =============================================================================
 # --- Folder Setup ---
 # =============================================================================
 
-# The script looks for this exact column name to match everything up.
+# The script looks for this exact column name in the database files to match everything up.
 CLAUSE_COL_NAME = 'Clause' 
 
-# Find exactly where this code is saved on the computer.
+# Find exactly where this code is saved on the computer so it works on any machine.
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Look one folder up to find the main project folder.
@@ -57,7 +53,6 @@ def clean_headers(columns):
     """
     clean_cols = []
     for col in columns:
-        # Remove line breaks, asterisks, and extra spaces
         c = str(col).replace('\n', ' ').replace('*', '').strip()
         c = re.sub(r'\s+', ' ', c)
         clean_cols.append(c)
@@ -66,7 +61,7 @@ def clean_headers(columns):
 def load_databases(db_dir):
     """
     Reads all our separate agency files (FAR, DFARS, NASA, etc.) from the 
-    Database folder and combines them into one big list for the script to use.
+    Database folder and combines them into one massive master dictionary.
     """
     print(f"Loading database files from: {db_dir}...")
     all_dataframes = [] 
@@ -79,7 +74,7 @@ def load_databases(db_dir):
     for filename in os.listdir(db_dir):
         filepath = os.path.join(db_dir, filename)
         
-        # Skip hidden files or files we don't want to scan
+        # Skip hidden files or the old Definitions matrix
         if filename.startswith('~') or filename.startswith('.') or 'Definitions' in filename or filename == 'Contract Ts&Cs Matrix.xlsm':
             continue 
 
@@ -103,12 +98,13 @@ def load_databases(db_dir):
             # Filter out junk rows (like instructions or blank lines)
             if CLAUSE_COL_NAME in df.columns:
                 df[CLAUSE_COL_NAME] = df[CLAUSE_COL_NAME].astype(str).str.strip()
-                # Make sure the clause actually has a number in it
-                df = df[df[CLAUSE_COL_NAME].str.contains(r'\d', na=False)]
-                # Make sure the clause isn't an entire paragraph
-                df = df[df[CLAUSE_COL_NAME].str.len() < 30]
+                df = df[df[CLAUSE_COL_NAME].str.contains(r'\d', na=False)] # Must contain a number
+                df = df[df[CLAUSE_COL_NAME].str.len() < 30] # Can't be a whole paragraph
                 
                 all_dataframes.append(df)
+            else:
+                # If the file doesn't have a 'Clause' column, warn the user
+                print(f"  ! Skipped: {filename} - Missing '{CLAUSE_COL_NAME}' column.")
             
         except Exception as e:
             print(f"  ! Error loading {filename}: {e}")
@@ -116,18 +112,20 @@ def load_databases(db_dir):
     if not all_dataframes:
         return None
 
-    # Combine everything together
+    # Combine everything together into one big list
     combined_df = pd.concat(all_dataframes, ignore_index=True)
     print(f"Successfully built a master database of {len(combined_df)} total clauses.")
     return combined_df
 
+# --- Text Extraction ---
+
 def extract_text_from_pdf(pdf_path):
     """
     Tries to read the PDF normally. If it realizes the PDF is just a scanned 
-    picture, it takes extra steps to read the text from the images.
+    picture, it takes extra steps to take pictures of the pages and read them.
     """
     text = ""
-    print(f"Extracting text from: {os.path.basename(pdf_path)}...")
+    print(f"Extracting text from PDF: {os.path.basename(pdf_path)}...")
     
     # Try reading the text the fast, normal way
     try:
@@ -142,19 +140,15 @@ def extract_text_from_pdf(pdf_path):
 
     # If we barely found any text, it's probably a scanned document.
     if len(text.strip()) < 50:
-        print("  ! No text found. Looks like a scan. Reading images now (this might take a minute)...")
+        print("  ! No text found. Looks like a scan. Reading images now...")
         try:
-            # Turn the PDF pages into pictures
             images = convert_from_path(pdf_path)
             ocr_text = ""
-            
-            # Read the text out of each picture
             for i, image in enumerate(images):
                 print(f"    - Reading page {i + 1} of {len(images)}...")
                 ocr_text += pytesseract.image_to_string(image) + "\n"
             
             text = ocr_text
-            
             if not text.strip():
                 print("  ! Warning: Could not find any text in the scan either. Skipping.")
                 return None
@@ -165,79 +159,205 @@ def extract_text_from_pdf(pdf_path):
 
     return text
 
+def extract_text_from_docx(docx_path):
+    """
+    Reads the text out of a standard Word document, including any text
+    hidden inside tables.
+    """
+    print(f"Extracting text from Word Document: {os.path.basename(docx_path)}...")
+    text = ""
+    try:
+        doc = docx.Document(docx_path)
+        # Read standard paragraphs
+        for paragraph in doc.paragraphs:
+            text += paragraph.text + "\n"
+        # Dig into tables and read the cells
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for paragraph in cell.paragraphs:
+                        text += paragraph.text + "\n"
+        return text
+    except Exception as e:
+        print(f"  ! Error reading Word document {docx_path}: {e}")
+        return None
+
+# --- Cross-Referencing & Formatting ---
+
 def find_clauses_from_db(text, master_clauses):
     """
-    Looks through the text we pulled from the PDF and checks if any of our 
-    database clauses are in it.
+    Looks through the text we pulled from the contract and checks if any 
+    of our database clauses are in it (like a massive CTRL+F).
     """
     found_clauses = []
     for clause in master_clauses:
-        # Check for the exact clause number (so we don't accidentally match part of another number)
+        # We check for exact matches so "52.2" doesn't accidentally trigger "52.212-4"
         pattern = r'\b' + re.escape(clause) + r'\b'
         if re.search(pattern, text):
             found_clauses.append(clause)
-            
     return sorted(found_clauses)
 
 def generate_compliance_matrix(found_clauses, master_df):
     """
     Builds the final Excel spreadsheet by matching the clauses we found in the 
-    PDF with their full details from our database.
+    contract with their full details (Title, Status, etc.) from our database.
     """
     if master_df is None:
         return None
 
     matrix_rows = []
     headers = master_df.columns.tolist()
-
     print(f"Cross-referencing {len(found_clauses)} clauses with the combined database...")
 
-    # Grab the row information for every clause we found
+    # Grab the full row information for every clause we found
     for clause in found_clauses:
         matching_rows = master_df[master_df[CLAUSE_COL_NAME] == clause]
         for _, row in matching_rows.iterrows():
             matrix_rows.append(row.tolist())
 
-    # Put it all into a clean spreadsheet format and sort it
+    # Put it all into a clean spreadsheet format and sort it alphabetically
     matrix_df = pd.DataFrame(matrix_rows, columns=headers)
     matrix_df = matrix_df.sort_values(by=CLAUSE_COL_NAME).reset_index(drop=True)
     return matrix_df
 
+def apply_color_coding(filepath):
+    """
+    Opens the completed spreadsheet and paints the cells Green, Yellow, or Red 
+    based on the client's internal compliance rubric.
+    """
+    print("  - Applying rubric color-coding to the spreadsheet...")
+    
+    fill_ok = PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid')      # Green
+    fill_c = PatternFill(start_color='FFEB9C', end_color='FFEB9C', fill_type='solid')       # Yellow
+    fill_remove = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')  # Red
+
+    wb = load_workbook(filepath)
+    ws = wb.active
+
+    # Check every single cell in the spreadsheet
+    for row in ws.iter_rows(min_row=2):
+        for cell in row:
+            val = str(cell.value).strip().lower() if cell.value else ""
+            if val == 'ok':
+                cell.fill = fill_ok
+            elif val == 'c':
+                cell.fill = fill_c
+            elif val == 'remove':
+                cell.fill = fill_remove
+
+    wb.save(filepath)
+
+# --- Highlighting Functions ---
+
+def highlight_pdf(input_path, output_path, found_clauses):
+    """
+    Opens the original PDF, finds the physical coordinates of the clauses we found,
+    draws a yellow highlight box over them, and saves a new copy.
+    """
+    print("  - Generating highlighted PDF...")
+    try:
+        doc = fitz.open(input_path)
+        for page in doc:
+            for clause in found_clauses:
+                # Find exactly where the text lives on the page
+                text_instances = page.search_for(clause)
+                for inst in text_instances:
+                    # Draw a yellow box over it
+                    highlight = page.add_highlight_annot(inst)
+                    highlight.update() 
+        doc.save(output_path, garbage=4, deflate=True, clean=True)
+        doc.close()
+        print(f"  -> Highlighted PDF saved to: {output_path}")
+    except Exception as e:
+        print(f"  ! Failed to highlight PDF: {e}")
+
+def _apply_highlights_to_paragraph(paragraph, found_clauses):
+    """
+    Word documents are tricky. To highlight a specific word, we have to erase 
+    the paragraph and redraw it piece-by-piece with the yellow highlight added in.
+    """
+    # Find which clauses are actually in this specific paragraph
+    clauses_in_para = [c for c in found_clauses if re.search(r'\b' + re.escape(c) + r'\b', paragraph.text)]
+    
+    if clauses_in_para:
+        original_text = paragraph.text
+        paragraph.clear() # Erase the old text
+        
+        # Split the text exactly where the clauses are
+        pattern = r'(\b(?:' + '|'.join(map(re.escape, clauses_in_para)) + r')\b)'
+        parts = re.split(pattern, original_text)
+        
+        # Redraw the paragraph
+        for part in parts:
+            if not part: continue
+            run = paragraph.add_run(part)
+            # If this piece of text is our clause, paint it yellow
+            if part in clauses_in_para:
+                run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+
+def highlight_docx(input_path, output_path, found_clauses):
+    """
+    Opens the original Word Document, searches for the clauses, and saves 
+    a newly highlighted copy.
+    """
+    print("  - Generating highlighted Word Document...")
+    try:
+        doc = docx.Document(input_path)
+        
+        # Check standard paragraphs
+        for paragraph in doc.paragraphs:
+            _apply_highlights_to_paragraph(paragraph, found_clauses)
+            
+        # Check paragraphs hidden inside tables
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for paragraph in cell.paragraphs:
+                        _apply_highlights_to_paragraph(paragraph, found_clauses)
+                        
+        doc.save(output_path)
+        print(f"  -> Highlighted DOCX saved to: {output_path}")
+    except Exception as e:
+        print(f"  ! Failed to highlight Word Document: {e}")
+
 # =============================================================================
-# --- Main Script ---
+# --- Main Execution Block ---
 # =============================================================================
 
 def main():
     print("\n--- Starting Automated Compliance Matrix Generator ---")
 
-    # Make sure our folders exist
+    # Make sure our folders exist so the script doesn't crash
     os.makedirs(DATABASE_DIR, exist_ok=True)
     os.makedirs(SOLICITATIONS_DIR, exist_ok=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    # Load all the database files
+    # Load all the database files into memory
     master_df = load_databases(DATABASE_DIR)
     if master_df is None:
         print("Exiting due to error loading databases.")
         return
 
-    # Make a list of all the known clauses to search for
     known_clauses = master_df[CLAUSE_COL_NAME].unique().tolist()
 
-    # Find all the PDFs we need to scan
-    pdf_files = [f for f in os.listdir(SOLICITATIONS_DIR) if f.lower().endswith('.pdf')]
+    # Find all the PDFs and Word docs we need to process
+    doc_files = [f for f in os.listdir(SOLICITATIONS_DIR) if f.lower().endswith(('.pdf', '.docx'))]
 
-    if not pdf_files:
-        print(f"\nNo PDF files found in {SOLICITATIONS_DIR}.")
+    if not doc_files:
+        print(f"\nNo PDF or DOCX files found in {SOLICITATIONS_DIR}.")
         return
 
-    # Process each PDF one by one
-    for pdf_file in pdf_files:
-        print(f"\n--- Processing: {pdf_file} ---")
-        pdf_path = os.path.join(SOLICITATIONS_DIR, pdf_file)
+    # Process each document one by one
+    for file_name in doc_files:
+        print(f"\n--- Processing: {file_name} ---")
+        file_path = os.path.join(SOLICITATIONS_DIR, file_name)
 
-        # Get the text from the PDF
-        text = extract_text_from_pdf(pdf_path)
+        # Get the text out of the document
+        if file_name.lower().endswith('.pdf'):
+            text = extract_text_from_pdf(file_path)
+        elif file_name.lower().endswith('.docx'):
+            text = extract_text_from_docx(file_path)
+        
         if not text:
             continue
 
@@ -249,23 +369,33 @@ def main():
             print("Warning: No matching federal clauses found in text. Skipping file save.")
             continue
 
-        # Create the final spreadsheet
+        # 1. Generate and save the color-coded Excel Matrix
         compliance_matrix_df = generate_compliance_matrix(found_clauses, master_df)
-
-        # Name the file with a timestamp so we don't overwrite older files
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        output_filename = f"Compliance_Matrix_{os.path.splitext(pdf_file)[0]}_{timestamp}.xlsx"
-        output_path = os.path.join(OUTPUT_DIR, output_filename)
         
-        # Save the file to the Output folder
+        excel_filename = f"Compliance_Matrix_{os.path.splitext(file_name)[0]}_{timestamp}.xlsx"
+        excel_path = os.path.join(OUTPUT_DIR, excel_filename)
+        
         try:
-            compliance_matrix_df.to_excel(output_path, index=False)
-            print(f"Successfully saved compliance matrix to:\n  -> {output_path}")
+            compliance_matrix_df.to_excel(excel_path, index=False)
+            apply_color_coding(excel_path)
+            print(f"Successfully saved formatted compliance matrix.")
         except Exception as e:
-            print(f"Error saving output file {output_path}: {e}")
+            print(f"Error saving Excel file {excel_path}: {e}")
+
+        # 2. Generate and save the fully highlighted Document
+        if file_name.lower().endswith('.pdf'):
+            pdf_filename = f"Executed_Highlights_{os.path.splitext(file_name)[0]}_{timestamp}.pdf"
+            pdf_output_path = os.path.join(OUTPUT_DIR, pdf_filename)
+            highlight_pdf(file_path, pdf_output_path, found_clauses)
+            
+        elif file_name.lower().endswith('.docx'):
+            docx_filename = f"Executed_Highlights_{os.path.splitext(file_name)[0]}_{timestamp}.docx"
+            docx_output_path = os.path.join(OUTPUT_DIR, docx_filename)
+            highlight_docx(file_path, docx_output_path, found_clauses)
 
     print("\n--- All tasks completed. ---")
 
-# Run the main function when the script starts
+# Standard Python command to start the script
 if __name__ == '__main__':
     main()
