@@ -3,7 +3,7 @@
 ## Overview
 For our COMP 4710 class project, we are building a toolset to automate the tedious process of reviewing government and commercial contracts for our sponsor. 
 
-Currently, reviewing these documents means manually reading hundreds of pages of legalese, searching for alphanumeric federal codes (like FAR `52.212-4`), and cross-referencing them against massive Excel databases to see if they are acceptable. It takes hours. This project automates that entire workflow, saving our sponsor massive amounts of time while reducing human error.
+Currently, reviewing these documents means manually reading hundreds of pages of legalese, searching for alphanumeric federal codes, and cross-referencing them against massive Excel databases to see if they are acceptable. It takes hours. This project automates that entire workflow, saving our sponsor massive amounts of time.
 
 ## Phase 1: The Clause Matrix Generator (Current State)
 The current Python script (`matrix_generator.py`) handles standard federal solicitations. It acts as an incredibly advanced text parser and cross-referencer.
