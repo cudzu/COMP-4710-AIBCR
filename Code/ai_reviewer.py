@@ -18,7 +18,7 @@ from datetime import datetime
 # --- Setup & API Key ---
 # =============================================================================
 
-GEMINI_API_KEY = "AIzaSyAdRCcy6Efj1B4pMsvM7ajqzgCDeREgS0U"
+GEMINI_API_KEY = "API KEY HERE"
 
 # Folder Setup
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
